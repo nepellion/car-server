@@ -17,13 +17,15 @@ pub struct InputPins {
 }
 
 impl InputPins {
-    pub fn read_closing_current(&mut self) -> Result<u16, EspError> {
+    /// Reads the voltage drop across the closing current sense resistor in mV
+    pub fn read_closing_voltage_drop(&mut self) -> Result<u16, EspError> {
         let reading = self.adc_driver.read(&mut self.closing_current_sense_pin)?;
 
         Ok(reading)
     }
 
-    pub fn read_opening_current(&mut self) -> Result<u16, EspError> {
+    /// Reads the voltage drop across the opening current sense resistor in mV
+    pub fn read_opening_voltage_drop(&mut self) -> Result<u16, EspError> {
         let reading = self.adc_driver.read(&mut self.opening_current_sense_pin)?;
 
         Ok(reading)

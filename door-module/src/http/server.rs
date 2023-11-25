@@ -1,32 +1,133 @@
 use embedded_svc::http::Method;
+use esp_idf_hal::task::block_on;
 use esp_idf_svc::http::server::EspHttpServer;
-use std::sync::{Arc, Mutex};
+use shared_lib::http::endpoints;
+use std::sync::Arc;
+use tokio::sync::{broadcast, Mutex};
 
-use crate::io::input::InputPins;
+use crate::app::{
+    events::{ServerRequest, ServerRequestType},
+    state::AppState,
+};
 
 const STACK_SIZE: usize = 10240;
 
-pub fn create_http_server<'a>(
-    input_pins: Arc<Mutex<InputPins>>,
+pub fn prepare_http_server<'a>(
+    sender: broadcast::Sender<ServerRequest>,
+    app_state: Arc<Mutex<AppState>>,
 ) -> EspHttpServer<'a> {
-    let input_pins = input_pins.clone();
-
-    log::info!("Starting HTTP server on...");
+    log::info!("Spawned HTTP server task.");
 
     let mut http_server = EspHttpServer::new(&esp_idf_svc::http::server::Configuration {
         stack_size: STACK_SIZE,
         ..Default::default()
-    }).expect("Couldn't create HTTP server");
+    })
+    .unwrap();
 
-    http_server.fn_handler("/", Method::Get, move |req| {
-        let current = input_pins.lock().unwrap().read_closing_current().unwrap();
-        
-        req.into_ok_response()?.write(format!("Current: {}mA", current).as_bytes())?;
-        
-        Ok(())
-    }).expect("Couldn't register handler");
+    http_server
+        .fn_handler("/state", Method::Get, move |req| {
+            let app_state = app_state.clone();
 
-    log::info!("Starting HTTP server started");
+            block_on(async move {
+                let app_state = app_state.lock().await;
+
+                req.into_ok_response()
+                    .expect("hey")
+                    .write(format!("App state: {}", app_state.random_val).as_bytes())
+                    .expect("heya");
+            });
+
+            Ok(())
+        })
+        .unwrap();
+
+    let _sender = sender.clone();
+    http_server
+        .fn_handler(endpoints::OPEN_WINDOWS_CONTINUOUS_PATH, Method::Post, move |req| {
+            _sender.send(ServerRequest {
+                request_type: ServerRequestType::Open,
+                request_data: Default::default(),
+            })?;
+
+            req.into_ok_response()?;
+
+            Ok(())
+        })
+        .unwrap();
+
+    let _sender = sender.clone();
+    http_server
+        .fn_handler(endpoints::CLOSE_WINDOWS_CONTINUOUS_PATH, Method::Post, move |req| {
+            _sender.send(ServerRequest {
+                request_type: ServerRequestType::Close,
+                request_data: Default::default(),
+            })?;
+
+            req.into_ok_response()?;
+
+            Ok(())
+        })
+        .unwrap();
+
+    let _sender = sender.clone();
+    http_server
+        .fn_handler(endpoints::OPEN_WINDOWS_FULLY_PATH, Method::Post, move |req| {
+            _sender.send(ServerRequest {
+                request_type: ServerRequestType::OpenFully,
+                request_data: Default::default(),
+            })?;
+
+            req.into_ok_response()?;
+
+            Ok(())
+        })
+        .unwrap();
+
+    let _sender = sender.clone();
+    http_server
+        .fn_handler(endpoints::CLOSE_WINDOWS_FULLY_PATH, Method::Post, move |req| {
+            _sender.send(ServerRequest {
+                request_type: ServerRequestType::CloseFully,
+                request_data: Default::default(),
+            })?;
+
+            req.into_ok_response()?;
+
+            Ok(())
+        })
+        .unwrap();
+
+    let _sender = sender.clone();
+    http_server
+        .fn_handler(endpoints::STOP_WINDOWS_PATH, Method::Post, move |req| {
+            _sender.send(ServerRequest {
+                request_type: ServerRequestType::Stop,
+                request_data: Default::default(),
+            })?;
+
+            req.into_ok_response()?;
+
+            Ok(())
+        })
+        .unwrap();
+
+    let _sender = sender.clone();
+    http_server
+        .fn_handler(endpoints::CONFIGURE_WINDOWS_CURRENT_THRESHOLDS_PATH, Method::Post, move |mut req| {
+            let mut buffer: [u8; 8] = [0; 8];
+
+            req.read(&mut buffer)?;
+
+            _sender.send(ServerRequest {
+                request_type: ServerRequestType::ConfigureCurrentThresholds,
+                request_data: buffer,
+            })?;
+
+            req.into_ok_response()?;
+
+            Ok(())
+        })
+        .unwrap();
 
     return http_server;
 }

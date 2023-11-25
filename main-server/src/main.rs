@@ -1,43 +1,78 @@
-use bt::server::create_bt_server;
+use std::sync::Arc;
+
+use bt::server::BluetoothServer;
+use clients::list::ClientsList;
+use esp_idf_hal::peripherals::Peripherals;
+use hal::power_window_controls_driver::PowerWindowDriver;
+use hal::{
+    DefaultLeftRequiredButtonPins, DefaultPowerWindowPeripherals, DefaultRightRequiredButtonPins,
+};
+use shared_lib::dto::pw_config::PowerWindowsConfig;
+use shared_lib::system::{run_tokio_runtime, setup_system};
 use shared_lib::wifi::config::{SYSTEM_AP_PASSWORD, SYSTEM_AP_SSID};
-use shared_lib::wifi::ext::get_ap_client_infos;
 use shared_lib::wifi::server::create_wifi_ap_sync;
-use esp_idf_hal::{delay::FreeRtos, peripherals::Peripherals};
+use svc::clients::ClientsSvc;
+use svc::power_window::PowerWindowsSvc;
+use svc::rest_client::RestClientSvc;
+use tokio::join;
+use tokio::sync::{broadcast, Mutex};
+
+use crate::clients::types::ClientType;
 
 mod app;
 mod bt;
-mod mqtt;
+mod clients;
+mod hal;
+mod svc;
 
-fn main() {
-    // setup
-    esp_idf_svc::sys::link_patches();
-    esp_idf_svc::log::EspLogger::initialize_default();
+fn main() -> anyhow::Result<()> {
+    setup_system()?;
 
     let peripherals = Peripherals::take().expect("Couldn't take peripherals");
 
     // Setup WI-FI AP and client connection
     // let a = create_wifi_ap_sync(peripherals.modem).expect("Setting up custom wifi AP failed");
-    let mut wifi = create_wifi_ap_sync(peripherals.modem, SYSTEM_AP_SSID, SYSTEM_AP_PASSWORD)
+    let wifi = create_wifi_ap_sync(peripherals.modem, SYSTEM_AP_SSID, SYSTEM_AP_PASSWORD)
         .expect("Failed to connect to wifi...");
 
-    let _bt_server = create_bt_server().expect("Failed to create BT server...");
+    let bt_server = BluetoothServer::new().expect("Failed to create BT server...");
 
-    loop {
-        let clients = get_ap_client_infos(&mut wifi).expect("Failed to get AP client infos");
-        let client_count = clients.len();
+    let clients_svc = Arc::new(Mutex::new(ClientsSvc::new()));
 
-        if client_count > 0 {
-            log::info!("Listing clients...");
-        }
+    let power_window_controls_driver = Arc::new(Mutex::new(PowerWindowDriver::new(
+        DefaultPowerWindowPeripherals {
+            adc: peripherals.adc1,
+            left_pins: DefaultLeftRequiredButtonPins {
+                open_pin: peripherals.pins.gpio4,
+                close_pin: peripherals.pins.gpio5,
+            },
+            right_pins: DefaultRightRequiredButtonPins {
+                open_pin: peripherals.pins.gpio2,
+                close_pin: peripherals.pins.gpio3,
+            },
+        },
+    )?));
 
-        for (i, client) in clients.iter().enumerate() {
-            log::info!("Client {:?}: {:?}", i, client.ip);
-        }
+    let rest_svc = Arc::new(Mutex::new(RestClientSvc::new()));
 
-        if client_count == 0 {
-            log::info!("No clients connected");
-        }
+    run_tokio_runtime(async move {
+        let (clients_sender, clients_receiver) = broadcast::channel::<ClientsList>(8);
+        let (http_sender, http_receiver) = broadcast::channel::<(ClientType, &'static str, [u8; 8])>(8);
+        let (pw_cfg_sender, pw_cfg_receiver) = broadcast::channel::<PowerWindowsConfig>(8);
 
-        FreeRtos::delay_ms(30000);
-    }
+        let clients_svc_task = ClientsSvc::run_loop(wifi, clients_sender, clients_svc);
+
+        let pw_svc_task = PowerWindowsSvc::run_loop(
+            power_window_controls_driver,
+            http_sender
+        );
+
+        bt_server.setup(pw_cfg_sender);
+
+        let rest_svc_task = RestClientSvc::run_loop(clients_receiver, pw_cfg_receiver, http_receiver, rest_svc);
+
+        join!(clients_svc_task, pw_svc_task, rest_svc_task);
+    })?;
+
+    Ok(())
 }

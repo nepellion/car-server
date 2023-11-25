@@ -31,6 +31,8 @@ anyhow = "1.0.75"
 futures = "0.3"
 embedded-svc = "0.26.4"
 esp-idf-sys = "0.33.7"
+tokio = { version = "1.34.0", features = ["rt", "net", "io-util", "sync", "time", "macros"] }
+mio = { version = "0.8.9", features = ["log"] }
 
 [build-dependencies]
 embuild = "0.31.3"
